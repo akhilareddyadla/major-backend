@@ -3,10 +3,18 @@ from typing import List, Optional
 from app.models.product import Product, ProductCreate, ProductUpdate, PriceHistory
 from app.services.products import product_service
 from app.services.auth import auth_service
+from app.services.apify import ApifyAmazonScraper
+from app.core.config import settings
+from app.db.mongodb import get_database
+from datetime import datetime
 import logging
+from ..main import fetch_amazon_price, fetch_flipkart_price, fetch_meesho_price
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/products", tags=["products"])
+
+# Initialize Apify scraper
+apify_scraper = ApifyAmazonScraper(settings.APIFY_API_TOKEN)
 
 def parse_bool(value: Optional[str] = Query(None, description="Filter by active status (true/false)")) -> Optional[bool]:
     if value is None:
@@ -18,34 +26,74 @@ def parse_bool(value: Optional[str] = Query(None, description="Filter by active 
     raise ValueError("Invalid boolean value for is_active")
 
 @router.post("/", response_model=Product)
-async def create_product(
+async def add_product(
     product: ProductCreate,
     current_user = Depends(auth_service.get_current_active_user)
 ):
-    """Create a new product."""
+    """Create a new product and fetch its details using Apify."""
     try:
-        return await product_service.create_product(str(current_user.id), product)
+        # Fetch product details using Apify
+        scraped_data = await apify_scraper.fetch_product_price(product.url)
+        
+        # Prepare product data
+        product_data = product.dict()
+        product_data.update({
+            "user_id": str(current_user.id),
+            "title": scraped_data["title"],
+            "asin": scraped_data["asin"],
+            "current_price": scraped_data["current_price"],
+            "currency": scraped_data["currency"],
+            "url": scraped_data["url"],
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "is_active": True,
+            "is_favorite": False
+        })
+        
+        # Save to database
+        db = get_database()
+        result = await db.products.insert_one(product_data)
+        product_data["_id"] = result.inserted_id
+        
+        return Product(**product_data)
     except Exception as e:
-        logger.error(f"Error creating product: {str(e)}")
+        logger.error(f"Error adding product: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=f"Error adding product: {str(e)}"
         )
 
 @router.get("/", response_model=List[Product])
 async def get_products(
     current_user = Depends(auth_service.get_current_active_user),
-    is_active: Optional[str] = Query(None, description="Filter by active status (true/false)"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
     filter_by: Optional[str] = Query(None, description="Filter type (all, favorites)"),
     sort_by: Optional[str] = Query("date", description="Sort field (date, price, name)")
 ):
     """Get all products for the current user."""
     try:
-        is_active_bool = None
-        if is_active is not None and is_active != "":
-            is_active_bool = is_active.lower() in ("true", "1", "yes")
-        products = await product_service.get_products(str(current_user.id), is_active_bool, filter_by, sort_by)
-        return products if products else []
+        db = get_database()
+        query = {"user_id": str(current_user.id)}
+        
+        # Apply filters
+        if is_active is not None:
+            query["is_active"] = is_active
+        if filter_by == "favorites":
+            query["is_favorite"] = True
+            
+        # Get products
+        cursor = db.products.find(query)
+        
+        # Apply sorting
+        if sort_by == "price":
+            cursor = cursor.sort("current_price", 1)
+        elif sort_by == "name":
+            cursor = cursor.sort("title", 1)
+        else:  # default sort by date
+            cursor = cursor.sort("created_at", -1)
+            
+        products = await cursor.to_list(length=None)
+        return [Product(**p) for p in products]
     except Exception as e:
         logger.error(f"Error getting products: {str(e)}")
         raise HTTPException(
@@ -103,7 +151,6 @@ async def update_product(
 ):
     """Update a product."""
     try:
-        # First get the product to check ownership
         existing_product = await product_service.get_product(product_id)
         if not existing_product:
             raise HTTPException(
@@ -139,7 +186,6 @@ async def delete_product(
 ):
     """Delete a product."""
     try:
-        # First get the product to check ownership
         existing_product = await product_service.get_product(product_id)
         if not existing_product:
             raise HTTPException(
@@ -175,7 +221,6 @@ async def toggle_favorite(
 ):
     """Toggle favorite status of a product."""
     try:
-        # First get the product to check ownership
         existing_product = await product_service.get_product(product_id)
         if not existing_product:
             raise HTTPException(
@@ -211,7 +256,6 @@ async def get_product_favorite_status(
 ):
     """Get favorite status of a product."""
     try:
-        # First get the product to check ownership
         existing_product = await product_service.get_product(product_id)
         if not existing_product:
             raise HTTPException(
@@ -242,7 +286,6 @@ async def get_price_history(
 ):
     """Get price history for a product."""
     try:
-        # First get the product to check ownership
         existing_product = await product_service.get_product(product_id)
         if not existing_product:
             raise HTTPException(
@@ -268,4 +311,4 @@ async def get_price_history(
 @router.get("/extract-info/")
 async def extract_info():
     """Placeholder for extract info endpoint."""
-    return {"message": "Not implemented yet"} 
+    return {"message": "Not implemented yet"}

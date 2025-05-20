@@ -12,6 +12,7 @@ from typing import Optional, List
 import logging
 import smtplib
 import json
+from app.models.notification import Notification
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -537,4 +538,121 @@ async def test_smtp_connection(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"SMTP test failed: {str(e)}"
+        )
+
+@router.get("/", response_model=List[Notification])
+async def get_notifications(
+    current_user: User = Depends(get_current_active_user),
+    is_read: Optional[bool] = Query(None, description="Filter by read status"),
+    notification_type: Optional[str] = Query(None, description="Filter by notification type"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of notifications to return"),
+    skip: int = Query(0, ge=0, description="Number of notifications to skip (for pagination)"),
+    sort_by: str = Query("created_at", description="Sort field (created_at, type)"),
+    sort_order: int = Query(-1, description="Sort order (1 for ascending, -1 for descending)"),
+    db=Depends(get_db)
+):
+    """
+    Get notification history for the current user with filtering and pagination.
+    """
+    try:
+        # Build query
+        query = {"user_id": str(current_user.id)}
+        
+        # Apply filters
+        if is_read is not None:
+            query["is_read"] = is_read
+        if notification_type:
+            query["type"] = notification_type
+            
+        # Get notifications with pagination and sorting
+        cursor = db.notifications.find(query)
+        
+        # Apply sorting
+        if sort_by == "type":
+            cursor = cursor.sort("type", sort_order)
+        else:  # default sort by created_at
+            cursor = cursor.sort("created_at", sort_order)
+            
+        # Apply pagination
+        cursor = cursor.skip(skip).limit(limit)
+        
+        # Convert to list and return
+        notifications = await cursor.to_list(length=None)
+        return [Notification(**n) for n in notifications]
+        
+    except Exception as e:
+        logging.error(f"Error retrieving notifications: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve notifications"
+        )
+
+@router.get("/count", response_model=dict)
+async def get_notifications_count(
+    current_user: User = Depends(get_current_active_user),
+    is_read: Optional[bool] = Query(None, description="Filter by read status"),
+    notification_type: Optional[str] = Query(None, description="Filter by notification type"),
+    db=Depends(get_db)
+):
+    """
+    Get count of notifications for the current user with optional filtering.
+    """
+    try:
+        # Build query
+        query = {"user_id": str(current_user.id)}
+        
+        # Apply filters
+        if is_read is not None:
+            query["is_read"] = is_read
+        if notification_type:
+            query["type"] = notification_type
+            
+        # Get count
+        total_count = await db.notifications.count_documents(query)
+        unread_count = await db.notifications.count_documents({**query, "is_read": False})
+        
+        return {
+            "total": total_count,
+            "unread": unread_count
+        }
+        
+    except Exception as e:
+        logging.error(f"Error counting notifications: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to count notifications"
+        )
+
+@router.put("/{notification_id}/read", response_model=Notification)
+async def mark_notification_read(
+    notification_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    """
+    Mark a notification as read.
+    """
+    try:
+        # Find and update notification
+        result = await db.notifications.find_one_and_update(
+            {"_id": ObjectId(notification_id), "user_id": str(current_user.id)},
+            {"$set": {"is_read": True, "read_at": datetime.utcnow()}},
+            return_document=True
+        )
+        
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Notification not found"
+            )
+            
+        return Notification(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error marking notification as read: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark notification as read"
         ) 

@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.models.user import User, UserCreate, Token, UserSignup
 from app.services.auth import auth_service
-from app.api.deps import oauth2_scheme
+from app.api.api_v1.endpoints.deps import oauth2_scheme
 import logging
 from pydantic import BaseModel, EmailStr
 from datetime import datetime

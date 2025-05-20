@@ -1,42 +1,56 @@
-from app.db.mongodb import get_collection, get_database
 import logging
+from app.db.mongodb import get_database
 
 logger = logging.getLogger(__name__)
 
 async def init_db():
-    """Initialize database with required indexes."""
+    """Initialize the database with required collections and indexes."""
     try:
-        # Get database instance
         db = get_database()
         
-        # Define collections and their indexes
-        collections_config = {
-            "price_history": [
-                {"keys": [("product_id", 1)]},
-                {"keys": [("timestamp", -1)]},
-                {"keys": [("product_id", 1), ("timestamp", -1)]}
-            ],
-            "products": [
-                {"keys": [("user_id", 1)]},
-                {"keys": [("created_at", -1)]},
-                {"keys": [("is_favorite", 1)]}
-            ],
-            "users": [
-                {"keys": [("email", 1)], "unique": True},
-                {"keys": [("username", 1)], "unique": True}
-            ]
-        }
+        # List of required collections
+        collections = [
+            "users",
+            "products",
+            "alerts",
+            "notifications",
+            "price_history"
+        ]
         
-        # Create collections and indexes
-        for collection_name, indexes in collections_config.items():
-            collection = get_collection(collection_name)
-            for index_spec in indexes:
-                keys = index_spec["keys"]
-                options = {k: v for k, v in index_spec.items() if k != "keys"}
-                await collection.create_index(keys, **options)
-                logger.info(f"Created index {keys} for collection {collection_name}")
+        # Create collections if they don't exist
+        existing_collections = await db.list_collection_names()
+        for collection in collections:
+            if collection not in existing_collections:
+                logger.info(f"Creating collection: {collection}")
+                await db.create_collection(collection)
         
-        logger.info("Database indexes created successfully")
+        # Create indexes
+        # Users collection indexes
+        await db.users.create_index([("email", 1)], unique=True)
+        await db.users.create_index([("username", 1)], unique=True)
+        
+        # Products collection indexes
+        await db.products.create_index([("user_id", 1)])
+        await db.products.create_index([("created_at", -1)])
+        await db.products.create_index([("is_favorite", 1)])
+        await db.products.create_index([("is_active", 1)])
+        
+        # Alerts collection indexes
+        await db.alerts.create_index([("user_id", 1)])
+        await db.alerts.create_index([("product_id", 1)])
+        await db.alerts.create_index([("is_active", 1)])
+        
+        # Notifications collection indexes
+        await db.notifications.create_index([("user_id", 1)])
+        await db.notifications.create_index([("created_at", -1)])
+        await db.notifications.create_index([("is_read", 1)])
+        
+        # Price history collection indexes
+        await db.price_history.create_index([("product_id", 1)])
+        await db.price_history.create_index([("timestamp", -1)])
+        
+        logger.info("Database initialization completed successfully")
+        
     except Exception as e:
-        logger.error(f"Error creating database indexes: {str(e)}")
+        logger.error(f"Error initializing database: {str(e)}")
         raise 

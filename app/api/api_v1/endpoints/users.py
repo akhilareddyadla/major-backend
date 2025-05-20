@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.models.user import User, UserUpdate
-from app.api.deps import get_current_user
+from app.api.api_v1.endpoints.deps import get_current_user
 import logging
 
 logger = logging.getLogger(__name__)

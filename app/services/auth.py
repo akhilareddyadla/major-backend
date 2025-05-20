@@ -18,12 +18,15 @@ class AuthService:
     def __init__(self):
         self.db = None
         self.users_collection = None
+        self.initialized = False
 
     async def initialize(self):
         """Initialize the auth service."""
-        self.db = get_database()
-        self.users_collection = get_collection("users")
-        logger.info("Auth service initialized")
+        if not self.initialized:
+            self.db = get_database()
+            self.users_collection = get_collection("users")
+            logger.info("AuthService initialized successfully")
+            self.initialized = True
 
     def create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
         """Create a new JWT access token."""
@@ -262,6 +265,30 @@ class AuthService:
             expires_delta=access_token_expires
         )
         return Token(access_token=access_token, token_type="bearer")
+
+    async def verify_token(self, token: str) -> Optional[Dict]:
+        """Verify a JWT token and return the user if valid."""
+        try:
+            payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+            user_id: str = payload.get("sub")
+            if user_id is None:
+                return None
+            
+            # Get user from database
+            user = await self.users_collection.find_one({"_id": ObjectId(user_id)})
+            if not user:
+                return None
+                
+            # Convert ObjectId to string for JSON serialization
+            user["_id"] = str(user["_id"])
+            return user
+            
+        except JWTError as e:
+            logger.error(f"JWT verification error: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Error verifying token: {str(e)}")
+            return None
 
 # Create auth service instance
 auth_service = AuthService()

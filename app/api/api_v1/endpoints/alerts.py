@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 from app.models.product import AlertPreference, PriceDropAlert, DiscountAlert, AlertPreferenceCreate, AlertPreferenceUpdate
 from app.models.product import AlertType
 from app.services.alerts import alert_service, AlertService
-from app.api.deps import get_current_user
+from app.api.api_v1.endpoints.deps import get_current_user
 from app.models.user import User
 from datetime import datetime
 from bson import ObjectId

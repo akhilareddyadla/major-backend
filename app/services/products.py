@@ -1,13 +1,14 @@
 from typing import List, Optional
 from datetime import datetime
 from bson import ObjectId
-from app.db.mongodb import get_collection
+from app.db.mongodb import get_collection, db
 from app.models.product import Product, ProductCreate, ProductUpdate, PriceHistory
 import logging
 from fastapi import HTTPException, status
 import pymongo
 import traceback
 from enum import Enum
+from app.schemas.product import ProductResponse
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +22,13 @@ class WebsiteType(str, Enum):
 class ProductService:
     def __init__(self):
         self.products_collection = None
+        self.price_history_collection = None
 
     async def initialize(self):
-        """Initialize the products collection."""
-        try:
-            self.products_collection = get_collection("products")
-            logger.info("ProductService initialized successfully")
-        except Exception as e:
-            logger.error(f"Error initializing ProductService: {str(e)}")
-            print(traceback.format_exc())
-            raise
+        """Initialize collections."""
+        self.products_collection = get_collection("products")
+        self.price_history_collection = get_collection("price_history")
+        logger.info("ProductService initialized successfully")
 
     async def create_product(self, user_id: str, product: ProductCreate) -> Product:
         """Create a new product."""
@@ -49,6 +47,14 @@ class ProductService:
 
             result = await self.products_collection.insert_one(product_dict)
             product_dict["_id"] = result.inserted_id
+            
+            # Create initial price history entry
+            await self.price_history_collection.insert_one({
+                "product_id": result.inserted_id,
+                "price": product.current_price,
+                "timestamp": datetime.utcnow()
+            })
+            
             return Product(**product_dict)
         except Exception as e:
             logger.error(f"Error creating product: {str(e)}")
@@ -288,5 +294,38 @@ class ProductService:
                 detail="Error getting favorite status"
             )
 
-# Create a single instance of ProductService
+    async def check_all_product_prices(self):
+        """Check prices for all products and update price history."""
+        try:
+            # Get all active products
+            cursor = self.products_collection.find({"is_active": True})
+            products = await cursor.to_list(length=None)
+            
+            for product in products:
+                try:
+                    # Here you would implement the actual price checking logic
+                    # For now, we'll just log that we're checking the price
+                    logger.info(f"Checking price for product: {product['name']}")
+                    
+                    # Update price history
+                    await self.price_history_collection.insert_one({
+                        "product_id": product["_id"],
+                        "price": product["current_price"],
+                        "timestamp": datetime.utcnow()
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error checking price for product {product['name']}: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error in check_all_product_prices: {str(e)}")
+            raise
+
+    async def save_price_comparison(self, comparison: dict):
+        collection = get_collection("price_comparisons")
+        result = await collection.insert_one(comparison)
+        return str(result.inserted_id)
+
+# Create a singleton instance
 product_service = ProductService() 

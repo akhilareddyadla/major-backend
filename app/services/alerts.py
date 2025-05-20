@@ -8,6 +8,7 @@ import logging
 import asyncio
 from bson import ObjectId
 from fastapi import WebSocket
+from app.schemas.alert import AlertCreate, AlertResponse
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,9 @@ class AlertService:
         self.price_drop_alerts_collection = None
         self.discount_alerts_collection = None
         self.active_connections: Dict[str, WebSocket] = {}
+        self.alerts_collection = None
+        self.notifications_collection = None
+        self.products_collection = None
 
     async def initialize(self):
         """Initialize the collections after MongoDB connection is established."""
@@ -26,6 +30,9 @@ class AlertService:
                 self.alert_preferences_collection = get_collection("alert_preferences")
                 self.price_drop_alerts_collection = get_collection("price_drop_alerts")
                 self.discount_alerts_collection = get_collection("discount_alerts")
+                self.alerts_collection = get_collection("alerts")
+                self.notifications_collection = get_collection("notifications")
+                self.products_collection = get_collection("products")
                 logger.info("AlertService collections initialized")
                 self.initialized = True
             except Exception as e:
@@ -250,6 +257,71 @@ class AlertService:
             return result.modified_count > 0
         except Exception as e:
             logger.error(f"Error marking alert as read: {str(e)}")
+            raise
+
+    async def create_alert(self, alert: AlertCreate, user_id: str) -> AlertResponse:
+        """Create a new price alert."""
+        alert_dict = alert.model_dump()
+        alert_dict.update({
+            "user_id": user_id,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "is_active": True
+        })
+        
+        result = await self.alerts_collection.insert_one(alert_dict)
+        alert_dict["id"] = str(result.inserted_id)
+        
+        return AlertResponse(**alert_dict)
+
+    async def check_all_alerts(self):
+        """Check all active alerts and trigger notifications if conditions are met."""
+        try:
+            # Get all active alerts
+            cursor = self.alerts_collection.find({"is_active": True})
+            alerts = await cursor.to_list(length=None)
+            
+            for alert in alerts:
+                try:
+                    # Get the associated product
+                    product = await self.products_collection.find_one({"_id": ObjectId(alert["product_id"])})
+                    if not product:
+                        logger.warning(f"Product not found for alert {alert['_id']}")
+                        continue
+                    
+                    # Check if price has dropped below threshold
+                    if product["current_price"] <= alert["target_price"]:
+                        # Create notification
+                        notification = {
+                            "user_id": alert["user_id"],
+                            "title": "Price Drop Alert!",
+                            "message": f"Price for {product['name']} has dropped to {product['current_price']} {product['currency']}",
+                            "type": "price_drop",
+                            "created_at": datetime.utcnow(),
+                            "is_read": False,
+                            "data": {
+                                "product_id": str(product["_id"]),
+                                "current_price": product["current_price"],
+                                "target_price": alert["target_price"]
+                            }
+                        }
+                        
+                        # Insert notification
+                        await self.notifications_collection.insert_one(notification)
+                        
+                        # Deactivate alert if it's a one-time alert
+                        if alert.get("alert_type") == "one_time":
+                            await self.alerts_collection.update_one(
+                                {"_id": alert["_id"]},
+                                {"$set": {"is_active": False}}
+                            )
+                            
+                except Exception as e:
+                    logger.error(f"Error checking alert {alert['_id']}: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error in check_all_alerts: {str(e)}")
             raise
 
 # Create a singleton instance of AlertService
