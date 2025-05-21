@@ -71,23 +71,19 @@ def scrape_flipkart_price(product_name: str):
     except Exception:
         return None
 
-def scrape_meesho_price(product_name: str):
-    search_url = f"https://www.meesho.com/search?q={product_name.replace(' ', '%20')}"
-    headers = {
-        "User-Agent": UserAgent().random,
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+def scrape_reliance_digital_price(product_name: str):
+    """Scrape the price of a product from Reliance Digital using the product name."""
     try:
-        response = requests.get(search_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        price_tag = soup.find("h5")
-        if price_tag:
-            price = price_tag.text.replace("₹", "").replace(",", "").strip()
-            return float(price)
-        return None
-    except Exception:
-        return None
+        logging.info(f"Scraping Reliance Digital price for {product_name}")
+        # Assuming a function exists to do the actual scraping
+        price = price_extractor._search_reliance_digital(product_name)
+        if price is not None:
+            return price
+        else:
+            return "Not found"
+    except Exception as e:
+        logging.error(f"Error scraping Reliance Digital price for {product_name}: {e}")
+        return "Error"
 
 def scrape_google_shopping(product_name):
     headers = {
@@ -110,18 +106,18 @@ def scrape_google_shopping(product_name):
                     "store": store.text.strip()
                 })
         # Try to find Amazon, Flipkart, Meesho prices
-        result = {"amazon": "Not found", "flipkart": "Not found", "meesho": "Not found"}
+        result = {"amazon": "Not found", "flipkart": "Not found", "reliancedigital": "Not found"}
         for offer in offers:
             if "amazon" in offer["store"].lower():
                 result["amazon"] = offer["price"]
             if "flipkart" in offer["store"].lower():
                 result["flipkart"] = offer["price"]
-            if "meesho" in offer["store"].lower():
-                result["meesho"] = offer["price"]
+            if "reliancedigital" in offer["store"].lower():
+                result["reliancedigital"] = offer["price"]
         return result
     except Exception as e:
         print("Google Shopping scrape error:", e)
-        return {"amazon": "Not found", "flipkart": "Not found", "meesho": "Not found"}
+        return {"amazon": "Not found", "flipkart": "Not found", "reliancedigital": "Not found"}
 
 # Selenium scraping helpers
 
@@ -328,7 +324,7 @@ def get_flipkart_price(driver, url):
         print(f"Flipkart scrape error: {e}")
         return "Not found"
 
-def get_meesho_price(driver, url):
+def get_reliancedigital_price(driver, url):
     try:
         driver.get(url)
         # Try primary price class
@@ -337,7 +333,7 @@ def get_meesho_price(driver, url):
         ).text
         return price
     except Exception as e:
-        print(f"Meesho primary price scrape error: {e}")
+        print(f"Reliance Digital primary price scrape error: {e}")
         try:
             # Fallback to default price class
             price = WebDriverWait(driver, 10).until(
@@ -345,7 +341,7 @@ def get_meesho_price(driver, url):
             ).text
             return price
         except Exception as fallback_e:
-            print(f"Meesho fallback price scrape error: {fallback_e}")
+            print(f"Reliance Digital fallback price scrape error: {fallback_e}")
             return "Not found"
 
 def get_flipkart_price_from_search(driver, product_name):
@@ -370,8 +366,8 @@ def get_flipkart_price_from_search(driver, product_name):
         print(f"Flipkart search scrape error: {e}")
         return "Not found"
 
-def get_meesho_price_from_search(driver, product_name):
-    search_url = f"https://www.meesho.com/search?q={product_name.replace(' ', '%20')}"
+def get_reliancedigital_price_from_search(driver, product_name):
+    search_url = f"https://www.reliancedigital.com/search?q={product_name.replace(' ', '%20')}"
     try:
         driver.get(search_url)
         # Wait for search results to load
@@ -392,7 +388,7 @@ def get_meesho_price_from_search(driver, product_name):
              price = driver.find_element(By.CLASS_NAME, "pdp-price").text
         return price
     except Exception as e:
-        print(f"Meesho search scrape error: {e}")
+        print(f"Reliance Digital search scrape error: {e}")
         return "Not found"
 
 def scrape_flipkart_price_selenium(driver, product_name):
@@ -524,18 +520,18 @@ def scrape_flipkart_price_selenium(driver, product_name):
         logging.error(f"Error scraping Flipkart price for {product_name}: {e}", exc_info=True)
         return {"store": "Flipkart", "price": "Error"}
 
-def scrape_meesho_price_selenium(driver, product_name):
+def scrape_reliancedigital_price_selenium(driver, product_name):
     try:
-        logging.info(f"Attempting to scrape Meesho for {product_name}")
-        search_url = f"https://www.meesho.com/search?q={product_name.replace(' ', '%20')}"
+        logging.info(f"Attempting to scrape Reliance Digital for {product_name}")
+        search_url = f"https://www.reliancedigital.com/search?q={product_name.replace(' ', '%20')}"
         driver.get(search_url)
 
         time.sleep(5) # Increased initial wait time
 
         # Try to find product link based on search term
         product_link_element = None
-        # Added multiple potential selectors for product cards and links on Meesho search results
-        meesho_card_selectors = [
+        # Added multiple potential selectors for product cards and links on Reliance Digital search results
+        reliancedigital_card_selectors = [
              'div.sc-hzDkRC', # Original common product card selector
              'div[data-qa="product-card"]', # Data-qa product card selector
              'div._1INlE', # Another potential card selector
@@ -543,17 +539,17 @@ def scrape_meesho_price_selenium(driver, product_name):
              'a[data-qa="product-image"]', # Link/card directly wrapping the product image
              'div[data-qa="product-item"]' # Another common product item container
         ]
-        meesho_link_selectors = [
+        reliancedigital_link_selectors = [
             'a', # Link is often a direct child of the card
             'a[href*="/"]' # Link containing a path
         ]
 
-        for card_selector in meesho_card_selectors:
+        for card_selector in reliancedigital_card_selectors:
             try:
                 product_cards = driver.find_elements(By.CSS_SELECTOR, card_selector)
-                logging.debug(f"Trying Meesho card selector '{card_selector}'. Found {len(product_cards)} potential product cards.")
+                logging.debug(f"Trying Reliance Digital card selector '{card_selector}'. Found {len(product_cards)} potential product cards.")
                 for card in product_cards:
-                    for link_selector in meesho_link_selectors:
+                    for link_selector in reliancedigital_link_selectors:
                         try:
                             link = card.find_element(By.CSS_SELECTOR, link_selector)
                             # Check if the product name is in the link's href or text, or a relevant element's text within the card
@@ -567,19 +563,19 @@ def scrape_meesho_price_selenium(driver, product_name):
                                 logging.info(f"Found specific product link for {product_name} using card selector '{card_selector}' and link selector '{link_selector}'.")
                                 break # Found the relevant product link, exit all inner loops
                         except Exception as e:
-                            logging.debug(f"Could not find link with selector '{link_selector}' in a Meesho card using card selector '{card_selector}' or process its text: {e}")
+                            logging.debug(f"Could not find link with selector '{link_selector}' in a Reliance Digital card using card selector '{card_selector}' or process its text: {e}")
                             continue # Try the next link selector in this card
                     if product_link_element: # If found with any link selector, break card loop
                          break
             except Exception as e:
-                logging.debug(f"Meesho card selector '{card_selector}' failed to find any elements: {e}")
+                logging.debug(f"Reliance Digital card selector '{card_selector}' failed to find any elements: {e}")
                 continue # Try the next card selector
             if product_link_element: # If found with any card selector, break outer loop
                 break
 
         # Fallback to the first product link if specific link not found
         if not product_link_element:
-             logging.info("Specific product link not found after trying all selectors. Attempting to find the first product link as a fallback on Meesho.")
+             logging.info("Specific product link not found after trying all selectors. Attempting to find the first product link as a fallback on Reliance Digital.")
              # Try a broader set of selectors for the very first link on the page
              fallback_selectors = [
                  'div.sc-hzDkRC a', # Link within original common card selector
@@ -591,20 +587,20 @@ def scrape_meesho_price_selenium(driver, product_name):
                 try:
                     # Use a general selector that likely targets the first product link
                     product_link_element = driver.find_element(By.CSS_SELECTOR, selector)
-                    logging.info(f"Found a fallback product link using selector '{selector}' on Meesho.")
+                    logging.info(f"Found a fallback product link using selector '{selector}' on Reliance Digital.")
                     break # Found a fallback link, break loop
                 except Exception as fallback_e:
-                     logging.debug(f"Fallback link selector '{selector}' failed on Meesho: {fallback_e}")
+                     logging.debug(f"Fallback link selector '{selector}' failed on Reliance Digital: {fallback_e}")
                      continue # Try next fallback selector
 
 
         if product_link_element:
             product_url = product_link_element.get_attribute('href')
-            logging.info(f"Found Meesho product URL: {product_url}")
-            # Meesho often returns relative URLs, make sure it's absolute
+            logging.info(f"Found Reliance Digital product URL: {product_url}")
+            # Reliance Digital often returns relative URLs, make sure it's absolute
             if not product_url.startswith('http'):
-                 product_url = f"https://www.meesho.com{product_url}"
-                 logging.info(f"Corrected Meesho product URL to absolute: {product_url}")
+                 product_url = f"https://www.reliancedigital.com{product_url}"
+                 logging.info(f"Corrected Reliance Digital product URL to absolute: {product_url}")
 
             driver.get(product_url)
             time.sleep(7) # Increased wait time after navigating to product page
@@ -617,7 +613,7 @@ def scrape_meesho_price_selenium(driver, product_name):
                 'span.sc-g setoFj', # Another potential price class
                  'span.Price_Price__2x_go', # Another potential price class
                  'div[data-qa="product-price"]', # Data-qa price selector
-                 'span._30jeq3', # Found this price class on some Meesho product pages
+                 'span._30jeq3', # Found this price class on some Reliance Digital product pages
                  'div._2m5l7 span.sc-gcgGn.kTcoqp' # Price within a specific card structure
             ]
             for selector in price_selectors:
@@ -627,46 +623,52 @@ def scrape_meesho_price_selenium(driver, product_name):
                         EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                     )
                     price = price_element.text
-                    logging.info(f"Found Meesho price element with selector {selector}: {price}")
+                    logging.info(f"Found Reliance Digital price element with selector {selector}: {price}")
                     if price and price.strip() != '':
                         break # Found price, no need to try other selectors
                     else:
                          price = "Not found"
                 except Exception as price_e:
-                   logging.debug(f"Price selector {selector} failed on Meesho: {price_e}")
+                   logging.debug(f"Price selector {selector} failed on Reliance Digital: {price_e}")
                    continue # Selector not found, try next one
 
 
             if price != "Not found":
                 # Clean the price string
                 cleaned_price = re.sub(r'[^\d.]', '', price)
-                logging.info(f"Cleaned Meesho price: {cleaned_price}")
+                logging.info(f"Cleaned Reliance Digital price: {cleaned_price}")
                 try:
                     price = float(cleaned_price)
-                    logging.info(f"Converted Meesho price to float: {price}")
+                    logging.info(f"Converted Reliance Digital price to float: {price}")
                 except ValueError:
-                    logging.warning(f"Could not convert cleaned Meesho price '{cleaned_price}' to float.")
+                    logging.warning(f"Could not convert cleaned Reliance Digital price '{cleaned_price}' to float.")
                     price = "Not found"
 
-            return {"store": "Meesho", "price": price}
+            return {"store": "Reliance Digital", "price": price}
         else:
-            logging.warning(f"No product link found for {product_name} on Meesho.")
-            return {"store": "Meesho", "price": "Not found"}
+            logging.warning(f"No product link found for {product_name} on Reliance Digital.")
+            return {"store": "Reliance Digital", "price": "Not found"}
 
     except Exception as e:
-        logging.error(f"Error scraping Meesho price for {product_name}: {e}", exc_info=True)
-        return {"store": "Meesho", "price": "Error"}
+        logging.error(f"Error scraping Reliance Digital price for {product_name}: {e}", exc_info=True)
+        return {"store": "Reliance Digital", "price": "Error"}
 
 @router.get("/fetch-price/", include_in_schema=True)
 async def fetch_price(url: str, product_name: Optional[str] = Query(None)):
-    """Fetch the current price of a product from Amazon, Flipkart, and Meesho using the given URL and optional product name."""
-    logging.info(f"Received request to fetch price for URL: {url} with product name: {product_name}")
-    result = {"amazon": "Not found", "flipkart": "Not found", "meesho": "Not found"}
-    
+    """Fetch the current price of a product from Amazon, Flipkart, and Reliance Digital using the given URL and optional product name."""
+    logging.info(f"Received request to fetch price for URL: {url} with optional product name: {product_name}")
+
+    result = {"amazon": "Not found", "flipkart": "Not found", "reliancedigital": "Not found"}
+
     try:
+        # Since get_product_details is not available in the loaded PriceExtractor, 
+        # we revert to using individual scraping functions.
+        # **IMPORTANT: You need to restart your server to load the latest price_extractor.py**
+
         if 'amazon.' in url.lower():
             logging.info(f"Attempting to fetch Amazon price directly from URL: {url}")
-            amazon_price = price_extractor.get_current_price(url)
+            # Assuming get_current_price is a valid method in price_extractor or elsewhere
+            amazon_price = price_extractor.get_current_price(url) 
             if amazon_price is not None:
                 result["amazon"] = amazon_price
                 logging.info(f"Successfully fetched Amazon price: {amazon_price}")
@@ -674,34 +676,26 @@ async def fetch_price(url: str, product_name: Optional[str] = Query(None)):
                 result["amazon"] = "Not found"
                 logging.warning(f"Could not fetch Amazon price for URL: {url}")
 
-        # For Flipkart and Meesho, we still need a product name to search
-        # Determine the product name to use for Flipkart and Meesho
-        # Prioritize extracted name from Amazon (if implemented and successful), then the product_name query parameter
-        # As we are now directly using the Amazon URL for Amazon price, we might not have an extracted_product_name easily here
-        # We can either add product name extraction back for other sites or rely solely on the product_name query param
+        # For Flipkart and Reliance Digital, we still need a product name to search
+        # Determine the product name to use for Flipkart and Reliance Digital
         # For now, let's rely on the product_name query parameter for other sites if the URL is not for them.
 
         name_for_other_sites = product_name
 
         if name_for_other_sites:
-            logging.info(f"Using product name '{name_for_other_sites}' for Flipkart and Meesho scraping.")
+            logging.info(f"Using product name '{name_for_other_sites}' for Flipkart and Reliance Digital scraping.")
 
             logging.info(f"Attempting to scrape Flipkart price for {name_for_other_sites}")
             # Get Flipkart price
-            # You can decide whether to use the existing selenium scraping or implement a requests/BS4 approach for Flipkart/Meesho
-            # Based on the current code, it seems you are using selenium for Flipkart/Meesho search results.
-            # Keep the existing logic for Flipkart and Meesho for now.
             try:
                 # Assuming scrape_flipkart_price_selenium takes product name and uses a driver
-                # You might need to adjust this if your scraping functions for Flipkart/Meesho work differently now.
-                driver = setup_driver() # Setup driver here if needed for Flipkart/Meesho
+                driver = setup_driver() # Setup driver here if needed for Flipkart/Reliance Digital
                 flipkart_price_result = scrape_flipkart_price_selenium(driver, name_for_other_sites)
                 if flipkart_price_result and flipkart_price_result.get("price") != "Error":
-                     # Ensure the price is a number before assigning
-                     try:
-                         result["flipkart"] = float(flipkart_price_result.get("price")) # Convert to float if needed
-                     except ValueError:
-                          result["flipkart"] = "Not found" # Handle cases where conversion fails
+                    try:
+                        result["flipkart"] = float(flipkart_price_result.get("price")) 
+                    except ValueError:
+                        result["flipkart"] = "Not found" 
                 else:
                     result["flipkart"] = "Not found"
                 logging.info(f"Flipkart price scraping result: {result['flipkart']}")
@@ -709,43 +703,42 @@ async def fetch_price(url: str, product_name: Optional[str] = Query(None)):
                 logging.error(f"Flipkart price scraping error for product {name_for_other_sites}: {e}", exc_info=True)
                 result["flipkart"] = "Error"
             finally:
-                 if 'driver' in locals() and driver is not None: driver.quit() # Ensure driver is quit
+                if 'driver' in locals() and driver is not None: 
+                    driver.quit() 
 
-            logging.info(f"Attempting to scrape Meesho price for {name_for_other_sites}")
-            # Get Meesho price
+            logging.info(f"Attempting to scrape Reliance Digital price for {name_for_other_sites}")
+            # Get Reliance Digital price
             try:
-                driver = setup_driver() # Setup driver here if needed for Flipkart/Meesho
-                meesho_price_result = scrape_meesho_price_selenium(driver, name_for_other_sites)
-                if meesho_price_result and meesho_price_result.get("price") != "Error":
-                     # Ensure the price is a number before assigning
-                     try:
-                         result["meesho"] = float(meesho_price_result.get("price")) # Convert to float if needed
-                     except ValueError:
-                          result["meesho"] = "Not found" # Handle cases where conversion fails
+                # Assuming scrape_reliancedigital_price_selenium takes product name and uses a driver
+                driver = setup_driver() 
+                reliancedigital_price_result = scrape_reliancedigital_price_selenium(driver, name_for_other_sites)
+                if reliancedigital_price_result and reliancedigital_price_result.get("price") != "Error":
+                    try:
+                        result["reliancedigital"] = float(reliancedigital_price_result.get("price")) 
+                    except ValueError:
+                        result["reliancedigital"] = "Not found" 
                 else:
-                     result["meesho"] = "Not found"
-                logging.info(f"Meesho price scraping result: {result['meesho']}")
+                    result["reliancedigital"] = "Not found"
+                logging.info(f"Reliance Digital price scraping result: {result['reliancedigital']}")
             except Exception as e:
-                logging.error(f"Meesho price scraping error for product {name_for_other_sites}: {e}", exc_info=True)
-                result["meesho"] = "Error"
+                logging.error(f"Reliance Digital price scraping error for product {name_for_other_sites}: {e}", exc_info=True)
+                result["reliancedigital"] = "Error"
             finally:
-                 if 'driver' in locals() and driver is not None: driver.quit() # Ensure driver is quit
+                if 'driver' in locals() and driver is not None: 
+                    driver.quit() 
 
         else:
-             logging.warning("No product name available to scrape Flipkart and Meesho.")
-             # If no product name is available from any source, set Flipkart and Meesho to Not found
-             if result["flipkart"] == "Not found": # Only set if not already an error from a failed attempt with None name
-                 result["flipkart"] = "Not found"
-             if result["meesho"] == "Not found": # Only set if not already an error from a failed attempt with None name
-                 result["meesho"] = "Not found"
-
+            logging.warning("No product name available to scrape Flipkart and Reliance Digital.")
+            if result["flipkart"] == "Not found": 
+                result["flipkart"] = "Not found"
+            if result["reliancedigital"] == "Not found": 
+                result["reliancedigital"] = "Not found"
 
         logging.info(f"Finished fetching prices for URL {url}. Results: {result}")
         return result
-        
+
     except Exception as e:
         logging.error(f"An unhandled error occurred during price fetching for URL {url}: {e}", exc_info=True)
-        # Return a 500 Internal Server Error to the frontend
         raise HTTPException(status_code=500, detail=f"Backend error during price fetching: {e}")
 
 @router.get("/{product_url:path}", response_model=ProductResponse)
@@ -801,9 +794,11 @@ async def add_product(
     logger.info(f"Processing add_product request: name={name}, url={url}, website={website}")
     
     # Fetch prices from all three sites
+    # Note: We should ideally use the get_product_details method here as well for consistency
+    # However, based on the existing structure, we will update the individual scraping calls.
     amazon_price = scrape_amazon_price(url)
     flipkart_price = scrape_flipkart_price(name)
-    meesho_price = scrape_meesho_price(name)
+    reliance_digital_price = scrape_reliance_digital_price(name)
 
     # Prepare product data
     product_data = {
@@ -822,7 +817,7 @@ async def add_product(
         "updated_at": datetime.utcnow(),
         "amazon_price": amazon_price,
         "flipkart_price": flipkart_price,
-        "meesho_price": meesho_price,
+        "reliance_digital_price": reliance_digital_price,
     }
 
     try:
