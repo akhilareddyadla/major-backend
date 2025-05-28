@@ -23,6 +23,8 @@ import time
 import re
 from selenium.webdriver.common.keys import Keys
 from app.services.price_extractor import price_extractor
+from app.services.price_extractor import PriceExtractor
+import inspect # Added for debugging
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -327,22 +329,15 @@ def get_flipkart_price(driver, url):
 def get_reliancedigital_price(driver, url):
     try:
         driver.get(url)
-        # Try primary price class
+        # Try primary price class (pdp-discounted-price for deal price)
         price = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CLASS_NAME, "pdp-discounted-price"))
         ).text
         return price
     except Exception as e:
-        print(f"Reliance Digital primary price scrape error: {e}")
-        try:
-            # Fallback to default price class
-            price = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "pdp-price"))
-            ).text
-            return price
-        except Exception as fallback_e:
-            print(f"Reliance Digital fallback price scrape error: {fallback_e}")
-            return "Not found"
+        # If discounted price is not found, return "Not found" instead of falling back
+        print(f"Reliance Digital discounted price scrape error: {e}")
+        return "Not found"
 
 def get_flipkart_price_from_search(driver, product_name):
     search_url = f"https://www.flipkart.com/search?q={product_name.replace(' ', '+')}"
@@ -384,8 +379,9 @@ def get_reliancedigital_price_from_search(driver, product_name):
         )
         try:
              price = driver.find_element(By.CLASS_NAME, "pdp-discounted-price").text
-        except:
-             price = driver.find_element(By.CLASS_NAME, "pdp-price").text
+        except Exception as e:
+             print(f"Could not find discounted price after search: {e}")
+             price = "Not found"
         return price
     except Exception as e:
         print(f"Reliance Digital search scrape error: {e}")
@@ -653,93 +649,53 @@ def scrape_reliancedigital_price_selenium(driver, product_name):
         logging.error(f"Error scraping Reliance Digital price for {product_name}: {e}", exc_info=True)
         return {"store": "Reliance Digital", "price": "Error"}
 
-@router.get("/fetch-price/", include_in_schema=True)
-async def fetch_price(url: str, product_name: Optional[str] = Query(None)):
-    """Fetch the current price of a product from Amazon, Flipkart, and Reliance Digital using the given URL and optional product name."""
-    logging.info(f"Received request to fetch price for URL: {url} with optional product name: {product_name}")
-
-    result = {"amazon": "Not found", "flipkart": "Not found", "reliancedigital": "Not found"}
-
+@router.get("/fetch-price/")
+async def fetch_price(url: str):
     try:
-        # Since get_product_details is not available in the loaded PriceExtractor, 
-        # we revert to using individual scraping functions.
-        # **IMPORTANT: You need to restart your server to load the latest price_extractor.py**
-
-        if 'amazon.' in url.lower():
-            logging.info(f"Attempting to fetch Amazon price directly from URL: {url}")
-            # Assuming get_current_price is a valid method in price_extractor or elsewhere
-            amazon_price = price_extractor.get_current_price(url) 
-            if amazon_price is not None:
-                result["amazon"] = amazon_price
-                logging.info(f"Successfully fetched Amazon price: {amazon_price}")
+        logger.info(f"Received request to fetch price for URL: {url}")
+        
+        # Fetch product details using the price extractor
+        product_name, prices = await price_extractor.get_product_details(url)
+        
+        if not product_name:
+            raise HTTPException(status_code=400, detail="Could not extract product name")
+        
+        # Ensure prices is a dictionary with the correct structure
+        if not isinstance(prices, dict):
+            prices = {
+                "amazon": None,
+                "flipkart": None,
+                "reliancedigital": None
+            }
+        
+        # Ensure all prices are either strings or None
+        formatted_prices = {}
+        for platform, price in prices.items():
+            if price is not None and price != "Not found":
+                formatted_prices[platform] = str(price)
             else:
-                result["amazon"] = "Not found"
-                logging.warning(f"Could not fetch Amazon price for URL: {url}")
-
-        # For Flipkart and Reliance Digital, we still need a product name to search
-        # Determine the product name to use for Flipkart and Reliance Digital
-        # For now, let's rely on the product_name query parameter for other sites if the URL is not for them.
-
-        name_for_other_sites = product_name
-
-        if name_for_other_sites:
-            logging.info(f"Using product name '{name_for_other_sites}' for Flipkart and Reliance Digital scraping.")
-
-            logging.info(f"Attempting to scrape Flipkart price for {name_for_other_sites}")
-            # Get Flipkart price
-            try:
-                # Assuming scrape_flipkart_price_selenium takes product name and uses a driver
-                driver = setup_driver() # Setup driver here if needed for Flipkart/Reliance Digital
-                flipkart_price_result = scrape_flipkart_price_selenium(driver, name_for_other_sites)
-                if flipkart_price_result and flipkart_price_result.get("price") != "Error":
-                    try:
-                        result["flipkart"] = float(flipkart_price_result.get("price")) 
-                    except ValueError:
-                        result["flipkart"] = "Not found" 
-                else:
-                    result["flipkart"] = "Not found"
-                logging.info(f"Flipkart price scraping result: {result['flipkart']}")
-            except Exception as e:
-                logging.error(f"Flipkart price scraping error for product {name_for_other_sites}: {e}", exc_info=True)
-                result["flipkart"] = "Error"
-            finally:
-                if 'driver' in locals() and driver is not None: 
-                    driver.quit() 
-
-            logging.info(f"Attempting to scrape Reliance Digital price for {name_for_other_sites}")
-            # Get Reliance Digital price
-            try:
-                # Assuming scrape_reliancedigital_price_selenium takes product name and uses a driver
-                driver = setup_driver() 
-                reliancedigital_price_result = scrape_reliancedigital_price_selenium(driver, name_for_other_sites)
-                if reliancedigital_price_result and reliancedigital_price_result.get("price") != "Error":
-                    try:
-                        result["reliancedigital"] = float(reliancedigital_price_result.get("price")) 
-                    except ValueError:
-                        result["reliancedigital"] = "Not found" 
-                else:
-                    result["reliancedigital"] = "Not found"
-                logging.info(f"Reliance Digital price scraping result: {result['reliancedigital']}")
-            except Exception as e:
-                logging.error(f"Reliance Digital price scraping error for product {name_for_other_sites}: {e}", exc_info=True)
-                result["reliancedigital"] = "Error"
-            finally:
-                if 'driver' in locals() and driver is not None: 
-                    driver.quit() 
-
-        else:
-            logging.warning("No product name available to scrape Flipkart and Reliance Digital.")
-            if result["flipkart"] == "Not found": 
-                result["flipkart"] = "Not found"
-            if result["reliancedigital"] == "Not found": 
-                result["reliancedigital"] = "Not found"
-
-        logging.info(f"Finished fetching prices for URL {url}. Results: {result}")
-        return result
-
+                formatted_prices[platform] = None
+        
+        # Format the response
+        response = {
+            "product_name": product_name,
+            "prices": formatted_prices
+        }
+        
+        logger.info(f"Successfully fetched prices: {response}")
+        return response
+        
     except Exception as e:
-        logging.error(f"An unhandled error occurred during price fetching for URL {url}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Backend error during price fetching: {e}")
+        logger.error(f"An unexpected error occurred in fetch_price endpoint for URL {url}: {str(e)}", exc_info=True)
+        # Return a structured error response
+        return {
+            "product_name": "Error occurred",
+            "prices": {
+                "amazon": None,
+                "flipkart": None,
+                "reliancedigital": None
+            }
+        }
 
 @router.get("/{product_url:path}", response_model=ProductResponse)
 async def get_product_by_url(
@@ -790,15 +746,28 @@ async def add_product(
     description: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user)
 ):
-    # Log incoming request
     logger.info(f"Processing add_product request: name={name}, url={url}, website={website}")
     
-    # Fetch prices from all three sites
-    # Note: We should ideally use the get_product_details method here as well for consistency
-    # However, based on the existing structure, we will update the individual scraping calls.
-    amazon_price = scrape_amazon_price(url)
-    flipkart_price = scrape_flipkart_price(name)
-    reliance_digital_price = scrape_reliance_digital_price(name)
+    # Fetch prices from all three sites using the consistent extractor method
+    current_price_extractor = PriceExtractor()
+    try:
+        extractor_results = await current_price_extractor.get_product_details(url)
+        amazon_price = extractor_results.get('amazon', 'Not found')
+        flipkart_price = extractor_results.get('flipkart', 'Not found')
+        reliance_digital_price = extractor_results.get('reliancedigital', 'Not found')
+    except Exception as e:
+        logger.error(f"Error fetching prices during add_product for URL {url}: {str(e)}")
+        # Set prices to 'Error' or 'Not found' if fetching fails
+        amazon_price = 'Error'
+        flipkart_price = 'Error'
+        reliance_digital_price = 'Error'
+    finally:
+        # Ensure the driver is always cleaned up if the extractor was created
+        if current_price_extractor and hasattr(current_price_extractor, 'cleanup'):
+            try:
+                current_price_extractor.cleanup()
+            except Exception as e:
+                logger.warning(f"Error during cleanup in add_product endpoint: {str(e)}")
 
     # Prepare product data
     product_data = {
@@ -806,7 +775,7 @@ async def add_product(
         "url": url,
         "website": website,
         "currency": currency,
-        "current_price": current_price,
+        "current_price": current_price, # Keep the price from the form for now
         "target_price": target_price,
         "price_drop_threshold": price_drop_threshold,
         "category": category,

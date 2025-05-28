@@ -17,7 +17,7 @@ from app.api.api_v1 import api_router
 from fastapi.websockets import WebSocketState
 import uvicorn
 from starlette.routing import Route, WebSocketRoute
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from app.services.scheduler import price_check_scheduler
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -34,13 +34,22 @@ from fake_useragent import UserAgent
 from fastapi import Depends
 from app.api.api_v1.endpoints import products
 import re
+import inspect
 
-# Configure logging
+# Configure basic logging
 logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S,%f'[:-3]
 )
+
+# Get the main application logger
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Get the price_extractor logger and set its level
+price_extractor_logger = logging.getLogger('app.services.price_extractor')
+price_extractor_logger.setLevel(logging.INFO)
 
 # Create FastAPI app
 app = FastAPI(
@@ -55,6 +64,9 @@ app = FastAPI(
 # Add CORS middleware
 origins = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
 ]
 
 app.add_middleware(
@@ -71,23 +83,49 @@ apify_scraper = ApifyAmazonScraper(settings.APIFY_API_TOKEN)
 # Mount the API router with prefix
 app.include_router(api_router, prefix="/api/v1")
 
-
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup_event():
-    await connect_to_mongo()
-    await init_db()
-    await price_check_scheduler.initialize()
-    price_check_scheduler.setup_scheduler(apify_scraper, notification_service)
-    await alert_service.initialize()
-    await product_service.initialize()
-    await auth_service.initialize()
-    await notification_service.initialize()
+    try:
+        logger.info("Starting application initialization...")
+        await connect_to_mongo()
+        logger.info("MongoDB connected successfully")
+        
+        await init_db()
+        logger.info("Database initialized successfully")
+        
+        await price_check_scheduler.initialize()
+        logger.info("Price check scheduler initialized")
+        
+        price_check_scheduler.setup_scheduler(apify_scraper, notification_service)
+        logger.info("Price check scheduler setup completed")
+        
+        await alert_service.initialize()
+        logger.info("Alert service initialized")
+        
+        await product_service.initialize()
+        logger.info("Product service initialized")
+        
+        await auth_service.initialize()
+        logger.info("Auth service initialized")
+        
+        await notification_service.initialize()
+        logger.info("Notification service initialized")
+        
+        logger.info("Application startup completed successfully")
+    except Exception as e:
+        logger.error(f"Error during application startup: {str(e)}", exc_info=True)
+        raise
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await close_mongo_connection()
-    await price_check_scheduler.shutdown()
+    try:
+        logger.info("Starting application shutdown...")
+        await close_mongo_connection()
+        await price_check_scheduler.shutdown()
+        logger.info("Application shutdown completed successfully")
+    except Exception as e:
+        logger.error(f"Error during application shutdown: {str(e)}", exc_info=True)
 
 # Custom OpenAPI schema
 def custom_openapi():
@@ -391,44 +429,49 @@ def fetch_meesho_price(product_name: str):
     return None
 
 @app.get("/api/v1/products/fetch-price/")
-async def fetch_price(url: str = Query(..., description="URL of the product to fetch price for")) -> Dict:
+async def fetch_price_endpoint(url: str, product_name: Optional[str] = None):
     try:
-        product_name = extract_product_name_from_url(url)
-        if not product_name:
-            logger.error(f"[API] Could not extract product name from URL: {url}")
-            raise HTTPException(status_code=400, detail="Could not extract product name from URL")
-        product_name = product_name.replace('Amazon.in:', '').strip()
-        product_name = re.sub(r'\b(by|from|on|in|at|the)\b', '', product_name, flags=re.IGNORECASE)
-        product_name = ' '.join(product_name.split())
-        logger.info(f"[API] Searching with product name: {product_name}")
-        amazon_price = None
-        try:
-            amazon_data = await apify_scraper.fetch_product_price(url)
-            amazon_price = amazon_data.get("current_price") if amazon_data else None
-        except Exception as e:
-            logger.error(f"[API] Apify scraping failed: {str(e)}. Trying direct scraping.")
-            try:
-                amazon_price, _ = fetch_amazon_price(product_name)
-            except Exception as e2:
-                logger.error(f"[API] Direct Amazon price fetch failed: {str(e2)}")
-                amazon_price = None
-        flipkart_price = fetch_flipkart_price(product_name)
-        meesho_price = fetch_meesho_price(product_name)
-        prices = {
-            "amazon": amazon_price,
-            "flipkart": flipkart_price,
-            "meesho": meesho_price,
-        }
-        prices = {k: (v if v is not None else "Not found") for k, v in prices.items()}
-        logger.info(f"[API] Final prices: {prices}")
+        logger.info(f"Received request to fetch price for URL: {url} with optional product name: {product_name}")
+        
+        # Initialize price extractor
+        current_price_extractor = price_extractor
+        logger.info(f"Type of current_price_extractor: {type(current_price_extractor)}")
+        logger.info(f"Has 'get_product_details' attribute: {hasattr(current_price_extractor, 'get_product_details')}")
+        
+        # Get product details
+        product_name, prices_dict = current_price_extractor.get_product_details(url)
+        
+        # Ensure prices_dict is a dictionary with the correct structure
+        if not isinstance(prices_dict, dict):
+            prices_dict = {
+                "amazon": None,
+                "flipkart": None,
+                "reliancedigital": None
+            }
+        
+        # Convert "Not found" and "Search Error" to None
+        for key in prices_dict:
+            if prices_dict[key] == "Not found" or prices_dict[key] == "Search Error":
+                prices_dict[key] = None
+        
+        # Log the final response
+        logger.info(f"Final response for {url}: {prices_dict}")
+        
         return {
             "product_name": product_name,
-            "prices": prices,
-            "timestamp": time.time()
+            "prices": prices_dict
         }
+        
     except Exception as e:
-        logger.error(f"[API] Error in fetch_price: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"An unexpected error occurred in fetch_price endpoint for URL {url}: {str(e)}")
+        return {
+            "product_name": "Error occurred",
+            "prices": {
+                "amazon": None,
+                "flipkart": None,
+                "reliancedigital": None
+            }
+        }
 
 class ProductAddRequest(BaseModel):
     product_name: str

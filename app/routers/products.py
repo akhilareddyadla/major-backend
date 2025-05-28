@@ -8,12 +8,13 @@ from app.core.config import settings
 from app.db.mongodb import get_database
 from datetime import datetime
 import logging
-from ..main import fetch_amazon_price, fetch_flipkart_price, fetch_meesho_price
+import re
+from app.services.price_extractor import price_extractor  # Import the singleton instance
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/products", tags=["products"])
 
-# Initialize Apify scraper
+# Initialize Apify scraper (kept for potential future use, but we'll primarily use price_extractor)
 apify_scraper = ApifyAmazonScraper(settings.APIFY_API_TOKEN)
 
 def parse_bool(value: Optional[str] = Query(None, description="Filter by active status (true/false)")) -> Optional[bool]:
@@ -30,20 +31,56 @@ async def add_product(
     product: ProductCreate,
     current_user = Depends(auth_service.get_current_active_user)
 ):
-    """Create a new product and fetch its details using Apify."""
+    """Create a new product and fetch its details from multiple platforms."""
     try:
-        # Fetch product details using Apify
-        scraped_data = await apify_scraper.fetch_product_price(product.url)
+        # Fetch prices from all supported platforms using price_extractor
+        prices = price_extractor.get_product_details(product.url)
         
+        # Determine the price based on the product's website
+        platform_key = product.website.lower()
+        if platform_key == "reliance digital":
+            platform_key = "reliancedigital"
+        elif platform_key not in ["amazon", "flipkart"]:
+            platform_key = None
+
+        if not platform_key or prices.get(platform_key, "Not found") == "Not found":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Could not fetch a valid price for the specified website: {product.website}"
+            )
+
+        current_price = prices[platform_key]
+        # Clean the price (remove currency symbol and commas for storage)
+        try:
+            current_price = float(re.sub(r'[^\d.]', '', current_price))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid price format fetched for {product.website}: {current_price}"
+            )
+
+        # Validate the price
+        if current_price < 1000:  # Arbitrary threshold for validation
+            logger.warning(f"Price {current_price} for {product.website} seems unrealistically low.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Price {current_price} for {product.website} seems unrealistically low."
+            )
+
+        # Extract title from the price_extractor response (we'll need to modify price_extractor to return the title)
+        # For now, we'll assume a title is available; you may need to adjust based on your price_extractor's return value
+        # Since price_extractor doesn't return the title directly, we'll fetch it separately if needed
+        # Alternatively, modify price_extractor to return the title along with prices
+        title = product.name  # Fallback to the provided name; ideally, fetch from price_extractor
+
         # Prepare product data
         product_data = product.dict()
         product_data.update({
             "user_id": str(current_user.id),
-            "title": scraped_data["title"],
-            "asin": scraped_data["asin"],
-            "current_price": scraped_data["current_price"],
-            "currency": scraped_data["currency"],
-            "url": scraped_data["url"],
+            "title": title,
+            "current_price": current_price,
+            "currency": "INR",  # Hardcoding to INR since price_extractor uses ₹
+            "url": product.url,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "is_active": True,
@@ -56,11 +93,49 @@ async def add_product(
         product_data["_id"] = result.inserted_id
         
         return Product(**product_data)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error adding product: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding product: {str(e)}"
+        )
+
+@router.get("/fetch-price/")
+async def fetch_product_price(
+    url: str = Query(..., description="The URL of the product to fetch price for"),
+    current_user = Depends(auth_service.get_current_active_user)
+):
+    """Fetch the current price of a product from supported platforms."""
+    try:
+        if not url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Product URL is required"
+            )
+
+        # Use the price_extractor to fetch prices
+        prices = price_extractor.get_product_details(url)
+
+        # Basic validation: Check if any price is unrealistically low
+        for platform, price in prices.items():
+            if price != "Not found" and isinstance(price, str):
+                try:
+                    # Extract numeric value from formatted price (e.g., "₹7.55" -> 7.55)
+                    price_value = float(re.sub(r'[^\d.]', '', price))
+                    if price_value < 1000:  # Arbitrary threshold for validation
+                        logger.warning(f"Price {price_value} for {platform} seems unrealistically low.")
+                        prices[platform] = "Invalid price detected"
+                except ValueError:
+                    prices[platform] = "Invalid price format"
+
+        return prices
+    except Exception as e:
+        logger.error(f"Error fetching product price: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching product price: {str(e)}"
         )
 
 @router.get("/", response_model=List[Product])
