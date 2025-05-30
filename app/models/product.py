@@ -198,21 +198,18 @@ class AlertPreferenceUpdate(BaseModel):
 
 class ProductResponse(BaseModel):
     id: str
-    url: HttpUrl
-    target_price: float
-    user_id: str
-    title: Optional[str] = None
-    asin: Optional[str] = None
+    name: str
+    url: str
+    website: str
+    category: Optional[str] = None
     current_price: Optional[float] = None
-    currency: Optional[str] = "INR"
-    priority: int = 1
-    check_frequency: int = 24
-    status: str = "active"
-    is_active: bool = True
-    price_history: Optional[List[dict]] = []
-    last_checked: Optional[datetime] = None
-    created_at: datetime
-    updated_at: datetime
+    target_price: Optional[float] = None
+    price_drop_threshold: Optional[float] = None
+    image_url: Optional[str] = None
+    # Add other fields as needed for display, e.g., prices from different sites
+    amazon_price: Optional[str] = None
+    flipkart_price: Optional[str] = None
+    reliance_digital_price: Optional[str] = None
 
     class Config:
         orm_mode = True

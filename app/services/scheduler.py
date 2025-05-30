@@ -12,6 +12,7 @@ from app.services.apify import ApifyAmazonScraper
 from app.services.notification import NotificationService
 from app.db.mongodb import get_database
 from app.core.config import settings
+from app.services.price_extractor import PriceExtractor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -63,7 +64,7 @@ class PriceCheckScheduler:
             logger.info(f'Job {event.job_id} completed successfully')
 
     @staticmethod
-    async def check_price_drops(scraper: ApifyAmazonScraper, notifier: NotificationService):
+    async def check_price_drops(scraper: ApifyAmazonScraper, notifier: NotificationService, price_extractor: PriceExtractor):
         """Check for price drops across all tracked products."""
         try:
             db = get_database()
@@ -75,61 +76,99 @@ class PriceCheckScheduler:
 
             for product in products:
                 try:
-                    # Fetch current price
-                    scraped_data = await scraper.fetch_product_price(product["url"])
-                    if not scraped_data or "current_price" not in scraped_data:
-                        logger.warning(f"Could not fetch price for product {product['_id']}")
+                    logger.info(f"Checking price for product: {product.get('name', product.get('url'))}")
+                    # Fetch prices using the PriceExtractor for multiple sites
+                    # Note: get_product_details returns (product_name, prices_dict)
+                    product_name_from_extractor, fetched_prices = await price_extractor.get_product_details(product["url"])
+
+                    if not fetched_prices:
+                        logger.warning(f"Could not fetch prices for product {product['_id']}")
                         continue
 
-                    new_price = scraped_data["current_price"]
-                    current_price = product.get("current_price")
-                    
-                    # Update product price
+                    # Extract prices for each platform, handle None or 'Not found'
+                    amazon_price_str = fetched_prices.get('amazon')
+                    flipkart_price_str = fetched_prices.get('flipkart')
+                    reliance_digital_price_str = fetched_prices.get('reliancedigital')
+
+                    # Convert prices to float, handling potential errors and 'Not found'
+                    amazon_price = float(amazon_price_str) if amazon_price_str not in [None, 'Not found', 'Error'] else None
+                    flipkart_price = float(flipkart_price_str) if flipkart_price_str not in [None, 'Not found', 'Error'] else None
+                    reliance_digital_price = float(reliance_digital_price_str) if reliance_digital_price_str not in [None, 'Not found', 'Error'] else None
+
+                    # Find the lowest valid fetched price
+                    valid_prices = [p for p in [amazon_price, flipkart_price, reliance_digital_price] if p is not None]
+                    lowest_price = min(valid_prices) if valid_prices else None
+
+                    # Get previous current price from the database
+                    previous_current_price = product.get("current_price")
+
+                    # Prepare update data for the product
+                    update_data = {
+                        "last_checked": datetime.utcnow(),
+                        "amazon_price": amazon_price,
+                        "flipkart_price": flipkart_price,
+                        "reliance_digital_price": reliance_digital_price,
+                        "current_price": lowest_price # Update current_price to the lowest found price
+                    }
+
+                    # Update product prices in the database
                     await db.products.update_one(
                         {"_id": product["_id"]},
-                        {
-                            "$set": {
-                                "current_price": new_price,
-                                "currency": scraped_data.get("currency", "INR"),
-                                "last_checked": datetime.utcnow()
-                            }
-                        }
+                        {"$set": update_data}
                     )
 
-                    # Check if price has dropped below target
-                    if new_price and new_price <= product["target_price"]:
-                        # Create price drop alert
-                        price_drop_alert = {
-                            "user_id": product["user_id"],
-                            "product_id": str(product["_id"]),
-                            "product_name": product["title"],
-                            "product_url": product["url"],
-                            "original_price": current_price or new_price,
-                            "current_price": new_price,
-                            "price_drop": (current_price or new_price) - new_price,
-                            "percentage_drop": ((current_price or new_price) - new_price) / (current_price or new_price) * 100,
-                            "alert_type": "PRICE_DROP",
-                            "created_at": datetime.utcnow()
-                        }
+                    # Check if the lowest price has dropped to or below the target price
+                    # Ensure previous_current_price is treated as a number for comparison if it exists
+                    previous_price_numeric = float(previous_current_price) if isinstance(previous_current_price, (int, float, str)) and str(previous_current_price).replace('.', '', 1).isdigit() else None
 
-                        # Get user details
-                        user = await db.users.find_one({"_id": ObjectId(product["user_id"])})
-                        if user:
-                            await notifier.send_notification(
-                                user_id=str(user["_id"]),
-                                user_email=user.get("email"),
-                                alert=price_drop_alert
-                            )
+                    if lowest_price is not None and lowest_price <= product["target_price"]:
+                        # Check if this is a *new* price drop to or below the target
+                        # It's a new drop if there was no previous price, or the previous price was above the target, or the new price is lower than the previous price
+                        is_new_drop = False
+                        if previous_price_numeric is None or previous_price_numeric > product["target_price"] or lowest_price < previous_price_numeric:
+                             is_new_drop = True
+
+                        if is_new_drop:
+                            logger.info(f"Price drop detected for product {product['_id']}. New lowest price: {lowest_price}, Target price: {product['target_price']}")
+
+                            # Create price drop alert
+                            price_drop_alert = {
+                                "user_id": product["user_id"],
+                                "product_id": str(product["_id"]),
+                                "product_name": product.get('name', product_name_from_extractor or product.get('title', 'Unknown Product')),
+                                "product_url": product["url"],
+                                "original_price": previous_price_numeric or lowest_price, # Use previous numeric price if available
+                                "current_price": lowest_price,
+                                "price_drop": (previous_price_numeric or lowest_price) - lowest_price if previous_price_numeric is not None else 0.0,
+                                "percentage_drop": ((previous_price_numeric or lowest_price) - lowest_price) / (previous_price_numeric or lowest_price) * 100 if previous_price_numeric is not None and (previous_price_numeric or lowest_price) > 0 else 0.0,
+                                "alert_type": "PRICE_DROP",
+                                "created_at": datetime.utcnow(),
+                                "amazon_price": amazon_price,
+                                "flipkart_price": flipkart_price,
+                                "reliance_digital_price": reliance_digital_price,
+                                "message": f"Price drop alert for {product.get('name', product_name_from_extractor or product.get('title', 'Unknown Product'))}! Lowest price is now {lowest_price} (Target: {product['target_price']})."
+                            }
+
+                            # Get user details
+                            user = await db.users.find_one({"_id": ObjectId(product["user_id"])})
+                            if user:
+                                logger.info(f"Sending notification to user {user.get('email') or user['_id']}")
+                                # Send notification using the notifier service
+                                await notifier.send_notification(
+                                    user_id=str(user["_id"]),
+                                    user_email=user.get("email"),
+                                    alert=price_drop_alert # Pass the created alert dictionary
+                                )
 
                 except Exception as e:
-                    logger.error(f"Error processing product {product['_id']}: {str(e)}")
+                    logger.error(f"Error processing product {product['_id']}: {str(e)}", exc_info=True)
                     continue
 
         except Exception as e:
-            logger.error(f"Error in check_price_drops: {str(e)}")
+            logger.error(f"Error in check_price_drops: {str(e)}", exc_info=True)
             raise
 
-    def setup_scheduler(self, scraper: ApifyAmazonScraper, notifier: NotificationService):
+    def setup_scheduler(self, scraper: ApifyAmazonScraper, notifier: NotificationService, price_extractor: PriceExtractor):
         """Set up the scheduler with price check jobs."""
         try:
             if not self.initialized:
@@ -142,7 +181,7 @@ class PriceCheckScheduler:
             self.scheduler.add_job(
                 PriceCheckScheduler.check_price_drops,
                 trigger=CronTrigger(hour=0, minute=0),  # Run at midnight UTC
-                args=[scraper, notifier],
+                args=[scraper, notifier, price_extractor],
                 id='daily_price_check',
                 replace_existing=True
             )
@@ -151,7 +190,7 @@ class PriceCheckScheduler:
             self.scheduler.add_job(
                 PriceCheckScheduler.check_price_drops,
                 trigger=IntervalTrigger(hours=1),
-                args=[scraper, notifier],
+                args=[scraper, notifier, price_extractor],
                 id='hourly_price_check',
                 replace_existing=True
             )

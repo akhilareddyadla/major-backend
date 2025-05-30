@@ -25,6 +25,7 @@ from selenium.webdriver.common.keys import Keys
 from app.services.price_extractor import price_extractor
 from app.services.price_extractor import PriceExtractor
 import inspect # Added for debugging
+from bson import ObjectId # Import ObjectId
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -815,3 +816,40 @@ async def get_products(current_user: User = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Database error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.delete("/{product_id}")
+async def delete_product(
+    product_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a product by its ID."""
+    try:
+        logger.info(f"Processing delete_product request for ID: {product_id}")
+        
+        # Validate the product_id as a valid ObjectId
+        if not ObjectId.is_valid(product_id):
+            raise HTTPException(status_code=400, detail="Invalid product ID format")
+            
+        products_collection = get_collection("products")
+        
+        # Attempt to delete the product, ensuring it belongs to the current user
+        result = await products_collection.delete_one({
+            "_id": ObjectId(product_id),
+            "user_id": str(current_user.id)
+        })
+        
+        if result.deleted_count == 0:
+            # Product not found or not owned by the user
+            raise HTTPException(status_code=404, detail="Product not found or you do not have permission to delete it")
+        
+        logger.info(f"Product with ID {product_id} deleted successfully.")
+        return {"message": "Product deleted successfully"}
+    
+    except HTTPException:
+        raise # Re-raise HTTPException so FastAPI handles it
+    except Exception as e:
+        logger.error(f"Error deleting product with ID {product_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting product: {str(e)}"
+        )

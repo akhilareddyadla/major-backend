@@ -97,7 +97,7 @@ async def startup_event():
         await price_check_scheduler.initialize()
         logger.info("Price check scheduler initialized")
         
-        price_check_scheduler.setup_scheduler(apify_scraper, notification_service)
+        price_check_scheduler.setup_scheduler(apify_scraper, notification_service, price_extractor)
         logger.info("Price check scheduler setup completed")
         
         await alert_service.initialize()
