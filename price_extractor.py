@@ -873,53 +873,38 @@ class PriceExtractor:
         if not self.driver or not processed_search_term:
             return "WebDriver/SearchTerm Error"
 
-        # Extract specific product details
-        model_number = None
-        if "fd0577tu" in search_term.lower():
-            model_number = "fd0577tu"
-
-        # Format search URL for Reliance Digital with multiple attempts
+        # Extract specific product details from search term
+        search_terms = [processed_search_term]
+        
+        # Add variations of the search term
+        if "poco" in processed_search_term.lower():
+            search_terms.extend([
+                processed_search_term.replace("POCO", "Poco"),
+                processed_search_term.replace("POCO", "poco"),
+                "POCO " + processed_search_term.split("POCO")[-1].strip(),
+                "Poco " + processed_search_term.split("POCO")[-1].strip()
+            ])
+        
+        # Format search URLs for Reliance Digital
         search_urls = []
         base_url = "https://www.reliancedigital.in/search?q="
         
-        # Add search URLs with different combinations
-        if model_number:
-            search_urls.append(f"{base_url}{quote_plus(model_number)}")
+        for term in search_terms:
+            search_urls.append(f"{base_url}{quote_plus(term)}")
         
-        # Add the original product name
-        search_urls.append(f"{base_url}{quote_plus(processed_search_term)}")
-        
-        # Add variations of the search term
-        search_urls.append(f"{base_url}{quote_plus('POCO C75 5G')}")
-        search_urls.append(f"{base_url}{quote_plus('POCO C75')}")
-        
-        max_retries = 2
+        max_retries = 3
         for attempt in range(max_retries):
             for search_url in search_urls:
                 try:
                     logger.info(f"_search_reliance_digital: Trying URL: {search_url}")
                     self.driver.get(search_url)
-                    time.sleep(5)  # Initial wait for page load
-
-                    # Wait for products to load
-                    try:
-                        WebDriverWait(self.driver, 30).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'div[class*="productCard"], div[class*="product-item"], div[class*="product-tile"], div[class*="product-list"], div[class*="product"], div[class*="item"], div[class*="ProductTeaser"], div[class*="ProductCard"], div[class*="plp-product"], div[class*="plpProduct"], div[class*="PlpProduct"]'))
-                        )
-                    except Exception as e:
-                        logger.warning(f"Initial product load wait failed: {str(e)}")
-                        WebDriverWait(self.driver, 30).until(
-                            lambda driver: driver.execute_script('return document.readyState') == 'complete'
-                        )
-
-                    # Scroll to trigger lazy loading
-                    for _ in range(3):
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                        time.sleep(2)
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                        time.sleep(2)
-
-                    # Updated product selectors
+                    
+                    # Wait for initial page load
+                    WebDriverWait(self.driver, 20).until(
+                        lambda driver: driver.execute_script('return document.readyState') == 'complete'
+                    )
+                    
+                    # Wait for products to load with multiple selectors
                     product_selectors = [
                         'div[class*="productCard"]',
                         'div[class*="product-item"]',
@@ -931,38 +916,41 @@ class PriceExtractor:
                         'div[class*="item"]',
                         'div[class*="ProductTeaser"]',
                         'div[class*="ProductCard"]',
-                        'div[class*="ProductItem"]',
-                        'div[class*="ProductTile"]',
-                        'div[class*="ProductList"]',
-                        'div[class*="SearchGrid"]',
-                        'div[class*="ProductGrid"]',
                         'div[class*="plp-product"]',
                         'div[class*="plpProduct"]',
                         'div[class*="PlpProduct"]'
                     ]
                     
+                    # Try each selector until we find products
                     product_elements = []
-                    for sel in product_selectors:
+                    for selector in product_selectors:
                         try:
-                            elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                            WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                            )
+                            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                             if elements:
                                 product_elements = elements
-                                logger.info(f"Found {len(elements)} product elements with selector: {sel}")
+                                logger.info(f"Found {len(elements)} product elements with selector: {selector}")
                                 break
                         except Exception as e:
-                            logger.debug(f"_search_reliance_digital: Selector {sel} failed: {str(e)}")
                             continue
-
+                    
                     if not product_elements:
                         logger.warning(f"No product containers found for URL: {search_url}")
-                        continue  # Try next URL
+                        continue
 
-                    logger.info(f"Reliance Digital search found {len(product_elements)} potential items.")
+                    # Scroll to trigger lazy loading
+                    for _ in range(3):
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                        time.sleep(1)
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(1)
 
+                    # Process each product
                     for product_element in product_elements[:10]:
-                        product_title, product_price = None, None
                         try:
-                            # Updated title selectors
+                            # Get product title
                             title_selectors = [
                                 'div[class*="productName"]',
                                 'div[class*="product-title"]',
@@ -981,6 +969,8 @@ class PriceExtractor:
                                 'div[class*="plpProductName"]',
                                 'div[class*="PlpProductName"]'
                             ]
+                            
+                            product_title = None
                             for title_sel in title_selectors:
                                 try:
                                     title_el = product_element.find_element(By.CSS_SELECTOR, title_sel)
@@ -993,80 +983,69 @@ class PriceExtractor:
                             if not product_title:
                                 continue
 
-                            logger.debug(f"_search_reliance_digital: Evaluating product title: {product_title}")
-                            
-                            # Check for model number match first
-                            if model_number and model_number.lower() in product_title.lower():
-                                logger.info(f"Found exact model match: {product_title}")
-                            elif product_title and self._product_matches(processed_search_term, product_title, search_ram, search_storage, search_color, search_model):
-                                logger.info(f"Reliance Match: '{product_title[:50]}...' with search term '{processed_search_term}'")
-                            else:
-                                logger.debug(f"_search_reliance_digital: No match for product title: {product_title}")
-                                continue
-
-                            # Try different selectors for price
-                            price_selectors = [
-                                'div[class*="price"] span',
-                                'span[class*="price"]',
-                                'div[class*="Price"]',
-                                'span[class*="Price"]',
-                                'div[class*="offerPrice"]',
-                                'span[class*="offerPrice"]',
-                                'div[class*="productPrice"]',
-                                'span[class*="productPrice"]',
-                                'div[class*="amount"]',
-                                'span[class*="amount"]',
-                                'div[class*="ProductPrice"]',
-                                'span[class*="ProductPrice"]',
-                                'div[class*="PriceBlock"]',
-                                'span[class*="PriceBlock"]',
-                                'div[class*="ProductTeaser__Price"]',
-                                'div[class*="plp-product-price"]',
-                                'div[class*="plpProductPrice"]',
-                                'div[class*="PlpProductPrice"]',
-                                'div[class*="price-block"]',
-                                'span[class*="price-block"]'
-                            ]
-                            
-                            for price_sel in price_selectors:
-                                try:
-                                    price_el = product_element.find_element(By.CSS_SELECTOR, price_sel)
-                                    if price_el and price_el.text.strip():
-                                        price_text = price_el.text.strip()
-                                        logger.debug(f"Price found with selector {price_sel}: {price_text}")
+                            # Check if product matches search term
+                            if self._calculate_similarity(processed_search_term.lower(), product_title.lower()) > 0.6:
+                                logger.info(f"Found matching product: {product_title}")
+                                
+                                # Get product price
+                                price_selectors = [
+                                    'div[class*="price"] span',
+                                    'span[class*="price"]',
+                                    'div[class*="Price"]',
+                                    'span[class*="Price"]',
+                                    'div[class*="offerPrice"]',
+                                    'span[class*="offerPrice"]',
+                                    'div[class*="productPrice"]',
+                                    'span[class*="productPrice"]',
+                                    'div[class*="amount"]',
+                                    'span[class*="amount"]',
+                                    'div[class*="ProductPrice"]',
+                                    'span[class*="ProductPrice"]',
+                                    'div[class*="PriceBlock"]',
+                                    'span[class*="PriceBlock"]',
+                                    'div[class*="ProductTeaser__Price"]',
+                                    'div[class*="plp-product-price"]',
+                                    'div[class*="plpProductPrice"]',
+                                    'div[class*="PlpProductPrice"]',
+                                    'div[class*="price-block"]',
+                                    'span[class*="price-block"]'
+                                ]
+                                
+                                for price_sel in price_selectors:
+                                    try:
+                                        price_el = product_element.find_element(By.CSS_SELECTOR, price_sel)
+                                        if price_el and price_el.text.strip():
+                                            price_text = price_el.text.strip()
+                                            
+                                            # Extract price using multiple patterns
+                                            price_patterns = [
+                                                r'₹\s*([\d,]+\.?\d*)',  # Standard ₹ pattern
+                                                r'Rs\.?\s*([\d,]+\.?\d*)',  # Rs. pattern
+                                                r'INR\s*([\d,]+\.?\d*)',  # INR pattern
+                                                r'([\d,]+\.?\d*)'  # Just numbers
+                                            ]
+                                            
+                                            for pattern in price_patterns:
+                                                match = re.search(pattern, price_text)
+                                                if match:
+                                                    cleaned_price_str = match.group(1).replace(',', '')
+                                                    if cleaned_price_str.replace('.', '', 1).isdigit():
+                                                        product_price = float(cleaned_price_str)
+                                                        logger.info(f"Found matching product price: {product_price}")
+                                                        return str(product_price)
+                                    except Exception as e:
+                                        continue
                                         
-                                        # Try different price patterns
-                                        price_patterns = [
-                                            r'₹\s*([\d,]+\.?\d*)',  # Standard ₹ pattern
-                                            r'Rs\.?\s*([\d,]+\.?\d*)',  # Rs. pattern
-                                            r'INR\s*([\d,]+\.?\d*)',  # INR pattern
-                                            r'([\d,]+\.?\d*)'  # Just numbers
-                                        ]
-                                        
-                                        for pattern in price_patterns:
-                                            match = re.search(pattern, price_text)
-                                            if match:
-                                                cleaned_price_str = match.group(1).replace(',', '')
-                                                if cleaned_price_str.replace('.', '', 1).isdigit():
-                                                    product_price = float(cleaned_price_str)
-                                                    logger.info(f"Reliance Digital search found matching product price: {product_price}")
-                                                    return str(product_price)
-                                except Exception as e:
-                                    logger.debug(f"Error processing price element: {str(e)}")
-                                    continue
-
                         except Exception as e:
                             logger.debug(f"Error processing product element: {str(e)}")
                             continue
 
                 except Exception as e:
-                    logger.error(f"Error searching Reliance Digital (attempt {attempt + 1}): {str(e)}", exc_info=True)
-                    continue  # Try next URL
-
-            if attempt < max_retries - 1:
-                logger.info("Retrying Reliance Digital search with different URL...")
-                time.sleep(random.uniform(5, 7))
-                continue
+                    logger.error(f"Error searching Reliance Digital (attempt {attempt + 1}): {str(e)}")
+                    if attempt < max_retries - 1:
+                        time.sleep(random.uniform(3, 5))
+                        continue
+                    break
 
         logger.info(f"Reliance Digital search finished for '{processed_search_term}', price not found.")
         return "Not found"
